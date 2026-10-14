@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RepoRater | Open-Source Repository Diagnostic Tool</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Top Navigation Bar -->
+    <header class="app-header">
+        <div class="header-container">
+            <div class="brand">
+                <h1>RepoRater</h1>
+                <span class="badge">v1.0 SPA</span>
+            </div>
+            <nav aria-label="Main Navigation">
+                <a href="index.html" class="nav-link">&larr; Back to Group Portfolio</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="app-main">
+        <!-- Search & Input Section -->
+        <section class="search-section" aria-labelledby="searchHeading">
+            <h2 id="searchHeading">Repository Health Analyzer</h2>
+            <p class="section-subtitle">
+                Enter a GitHub repository owner and name (or paste a full GitHub URL) to evaluate its maintenance status, issue density, and overall reliability.
+            </p>
+
+            <form id="repoSearchForm" class="search-form" novalidate>
+                <div class="input-group">
+                    <label for="ownerInput">Repository Owner / Organization</label>
+                    <input 
+                        type="text" 
+                        id="ownerInput" 
+                        name="owner" 
+                        placeholder="e.g., facebook (or paste facebook/react)" 
+                        autocomplete="off"
+                        required
+                    >
+                </div>
+
+                <span class="slash-divider" aria-hidden="true">/</span>
+
+                <div class="input-group">
+                    <label for="repoInput">Repository Name</label>
+                    <input 
+                        type="text" 
+                        id="repoInput" 
+                        name="repo" 
+                        placeholder="e.g., react" 
+                        autocomplete="off"
+                        required
+                    >
+                </div>
+
+                <button type="submit" id="analyzeBtn" class="primary-btn">
+                    Analyze Repo
+                </button>
+            </form>
+
+            <!-- Quick-Select Presets for Live Demo -->
+            <div class="presets-bar">
+                <span class="presets-label">Quick Demo Presets:</span>
+                <button type="button" class="preset-btn" data-owner="facebook" data-repo="react">facebook/react</button>
+                <button type="button" class="preset-btn" data-owner="twbs" data-repo="bootstrap">twbs/bootstrap</button>
+                <button type="button" class="preset-btn" data-owner="expressjs" data-repo="express">expressjs/express</button>
+                <button type="button" class="preset-btn" data-owner="moment" data-repo="moment">moment/moment (Legacy)</button>
+            </div>
+
+            <!-- LocalStorage Recent Searches -->
+            <div id="recentSearches" class="recent-searches" hidden>
+                <div class="recent-header">
+                    <span>Recent Scans:</span>
+                    <button type="button" id="clearHistoryBtn" class="text-btn">Clear History</button>
+                </div>
+                <div id="recentList" class="recent-list"></div>
+            </div>
+        </section>
+
+        <!-- Loading State Indicator -->
+        <section id="loadingState" class="status-panel loading-panel" aria-live="polite" hidden>
+            <div class="spinner" aria-hidden="true"></div>
+            <p>Querying GitHub REST API and calculating diagnostic metrics...</p>
+        </section>
+
+        <!-- Error Handling Banner -->
+        <section id="errorState" class="status-panel error-panel" role="alert" aria-live="assertive" hidden>
+            <h3 id="errorMessage">Could not fetch data. Please try again.</h3>
+            <p id="errorDetail">Please verify the repository owner and name or check your network connection.</p>
+        </section>
+
+        <!-- Dynamic Diagnostic Results Dashboard -->
+        <section id="resultsSection" class="results-section" aria-live="polite" hidden>
+            
+            <!-- Repository Identity Header -->
+            <article class="repo-overview-card">
+                <div class="repo-identity">
+                    <img id="ownerAvatar" src="" alt="Repository Owner Avatar" class="owner-avatar" width="72" height="72">
+                    <div class="repo-title-block">
+                        <div class="repo-name-row">
+                            <h2 id="repoFullName">owner/repo</h2>
+                            <div id="repoBadges" class="badge-group"></div>
+                        </div>
+                        <p id="repoDescription" class="repo-description">No description provided.</p>
+                        <a id="repoLink" href="#" target="_blank" rel="noopener noreferrer" class="external-link">
+                            View on GitHub &nearr;
+                        </a>
+                    </div>
+                </div>
+            </article>
+
+            <!-- Primary Diagnostic Grid: Health Score + Breakdown -->
+            <div class="diagnostic-grid">
+                <!-- Health Grade Card -->
+                <article id="gradeCard" class="grade-card">
+                    <h3>Overall Health Grade</h3>
+                    <div class="grade-display">
+                        <span id="healthGrade" class="grade-letter">-</span>
+                        <div class="grade-meta">
+                            <span id="healthScore" class="grade-score">0 / 100</span>
+                            <span id="healthVerdict" class="grade-verdict">Unrated</span>
+                        </div>
+                    </div>
+                    <p class="grade-footnote">
+                        Calculated via commit recency, open issue ratio, and project governance.
+                    </p>
+                </article>
+
+                <!-- Automated Diagnostic Breakdown -->
+                <article class="breakdown-card">
+                    <h3>Diagnostic Breakdown</h3>
+                    <ul id="diagnosticList" class="diagnostic-list">
+                        <!-- Dynamically populated by script.js -->
+                    </ul>
+                </article>
+            </div>
+
+            <!-- Quantitative API Metrics Grid -->
+            <article class="metrics-section">
+                <h3>Repository Telemetry</h3>
+                <div class="metrics-grid">
+                    <div class="metric-box">
+                        <span class="metric-label">Stars</span>
+                        <strong id="metricStars" class="metric-value">0</strong>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Open Issues</span>
+                        <strong id="metricIssues" class="metric-value">0</strong>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Forks</span>
+                        <strong id="metricForks" class="metric-value">0</strong>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Watchers</span>
+                        <strong id="metricWatchers" class="metric-value">0</strong>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Primary Language</span>
+                        <strong id="metricLanguage" class="metric-value">N/A</strong>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">License</span>
+                        <strong id="metricLicense" class="metric-value">None</strong>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Last Code Push</span>
+                        <strong id="metricLastPush" class="metric-value">N/A</strong>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Created On</span>
+                        <strong id="metricCreated" class="metric-value">N/A</strong>
+                    </div>
+                    <div class="metric-box">
+                        <span class="metric-label">Repo Size</span>
+                        <strong id="metricSize" class="metric-value">0 KB</strong>
+                    </div>
+                </div>
+            </article>
+
+            <!-- Recent Commit Activity Feed -->
+            <article class="commits-section">
+                <h3>Latest Commit Activity (Last 5 Pushes)</h3>
+                <ul id="commitsList" class="commits-list">
+                    <!-- Dynamically populated by script.js -->
+                </ul>
+            </article>
+
+        </section>
+    </main>
+
+    <footer class="app-footer">
+        <p>IT110 Web Systems and Technologies Midterm Project &bull; Powered by the Public GitHub REST API</p>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
