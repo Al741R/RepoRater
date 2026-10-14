@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RepoRater | Open-Source Repository Diagnostic Tool</title>
+    <!-- Inline SVG Favicon to prevent 404 console errors during live inspection -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23161b22' stroke='%2358a6ff' stroke-width='6'/><text x='50%25' y='56%25' font-family='monospace' font-size='52' font-weight='bold' fill='%233fb950' text-anchor='middle' dominant-baseline='middle'>R</text></svg>">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,7 +14,10 @@
         <div class="header-container">
             <div class="brand">
                 <h1>RepoRater</h1>
-                <span class="badge">v1.0 SPA</span>
+                <span class="badge">v1.2 SPA</span>
+                <span id="apiQuotaBadge" class="badge badge-quota" title="GitHub REST API Unauthenticated Rate Limit (60 requests/hr)">
+                    API Quota: 60 / 60
+                </span>
             </div>
             <nav aria-label="Main Navigation">
                 <a href="index.html" class="nav-link">&larr; Back to Group Portfolio</a>
@@ -23,10 +28,15 @@
     <main class="app-main">
         <!-- Search & Input Section -->
         <section class="search-section" aria-labelledby="searchHeading">
-            <h2 id="searchHeading">Repository Health Analyzer</h2>
-            <p class="section-subtitle">
-                Enter a GitHub repository owner and name (or paste a full GitHub URL) to evaluate its maintenance status, issue density, and overall reliability.
-            </p>
+            <div class="search-header-row">
+                <div>
+                    <h2 id="searchHeading">Repository Health Analyzer</h2>
+                    <p class="section-subtitle">
+                        Enter a GitHub repository owner and name (or paste a full GitHub URL) to evaluate its maintenance status, issue density, and overall reliability.
+                    </p>
+                </div>
+                <span class="shortcut-hint" title="Keyboard Shortcut">Press <kbd>/</kbd> to focus search</span>
+            </div>
 
             <form id="repoSearchForm" class="search-form" novalidate>
                 <div class="input-group">
@@ -66,7 +76,7 @@
                 <button type="button" class="preset-btn" data-owner="facebook" data-repo="react">facebook/react</button>
                 <button type="button" class="preset-btn" data-owner="twbs" data-repo="bootstrap">twbs/bootstrap</button>
                 <button type="button" class="preset-btn" data-owner="expressjs" data-repo="express">expressjs/express</button>
-                <button type="button" class="preset-btn" data-owner="moment" data-repo="moment">moment/moment (Legacy)</button>
+                <button type="button" class="preset-btn" data-owner="moment" data-repo="moment">moment/moment (Archived)</button>
             </div>
 
             <!-- LocalStorage Recent Searches -->
@@ -104,9 +114,18 @@
                             <div id="repoBadges" class="badge-group"></div>
                         </div>
                         <p id="repoDescription" class="repo-description">No description provided.</p>
-                        <a id="repoLink" href="#" target="_blank" rel="noopener noreferrer" class="external-link">
-                            View on GitHub &nearr;
-                        </a>
+                        
+                        <!-- Dynamic Repository Topic Pills -->
+                        <div id="repoTopics" class="topics-list" aria-label="Repository Topics" hidden></div>
+
+                        <div class="repo-actions-row">
+                            <a id="repoLink" href="#" target="_blank" rel="noopener noreferrer" class="external-link">
+                                View on GitHub &nearr;
+                            </a>
+                            <button type="button" id="copyReportBtn" class="secondary-btn copy-btn">
+                                Copy Diagnostic Report
+                            </button>
+                        </div>
                     </div>
                 </div>
             </article>
@@ -119,10 +138,44 @@
                     <div class="grade-display">
                         <span id="healthGrade" class="grade-letter">-</span>
                         <div class="grade-meta">
-                            <span id="healthScore" class="grade-score">0 / 100</span>
+                            <span id="healthScore" class="grade-score">Score: 0 / 100</span>
                             <span id="healthVerdict" class="grade-verdict">Unrated</span>
                         </div>
                     </div>
+
+                    <!-- Weighted Sub-Score Progress Bars -->
+                    <div class="subscore-meters" aria-label="Weighted Score Breakdown">
+                        <div class="meter-group">
+                            <div class="meter-label-row">
+                                <span>Maintenance Recency</span>
+                                <strong id="recencyVal">0 / 45</strong>
+                            </div>
+                            <div class="meter-track">
+                                <div id="recencyBar" class="meter-fill" style="width: 0%;"></div>
+                            </div>
+                        </div>
+
+                        <div class="meter-group">
+                            <div class="meter-label-row">
+                                <span>Issue Backlog Density</span>
+                                <strong id="issueVal">0 / 30</strong>
+                            </div>
+                            <div class="meter-track">
+                                <div id="issueBar" class="meter-fill" style="width: 0%;"></div>
+                            </div>
+                        </div>
+
+                        <div class="meter-group">
+                            <div class="meter-label-row">
+                                <span>Governance &amp; Adoption</span>
+                                <strong id="govVal">0 / 25</strong>
+                            </div>
+                            <div class="meter-track">
+                                <div id="govBar" class="meter-fill" style="width: 0%;"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <p class="grade-footnote">
                         Calculated via commit recency, open issue ratio, and project governance.
                     </p>

@@ -4,11 +4,19 @@
  *
  * Interacts with the public GitHub REST API using async/await to evaluate
  * open-source repository maintenance health, issue density, and recent activity.
+ * Includes sessionStorage caching, AbortController timeouts, rate-limit telemetry,
+ * URL deep-linking, keyboard shortcuts, and clipboard report export.
  */
 
 const GITHUB_API_BASE = 'https://api.github.com/repos';
 const STORAGE_KEY = 'reporater_recent_scans';
+const CACHE_PREFIX = 'reporater_cache_v1_';
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache lifetime
+const FETCH_TIMEOUT_MS = 8000;      // 8 seconds network timeout
 const MAX_HISTORY_ITEMS = 5;
+
+// Holds the latest analyzed report for one-click clipboard export
+let currentReportSummary = null;
 
 // DOM Element References
 const elements = {
@@ -17,7 +25,8 @@ const elements = {
     repoInput: document.getElementById('repoInput'),
     analyzeBtn: document.getElementById('analyzeBtn'),
     presetBtns: document.querySelectorAll('.preset-btn'),
-    
+    apiQuotaBadge: document.getElementById('apiQuotaBadge'),
+
     // History Elements
     recentSearches: document.getElementById('recentSearches'),
     recentList: document.getElementById('recentList'),
@@ -35,13 +44,21 @@ const elements = {
     repoFullName: document.getElementById('repoFullName'),
     repoBadges: document.getElementById('repoBadges'),
     repoDescription: document.getElementById('repoDescription'),
+    repoTopics: document.getElementById('repoTopics'),
     repoLink: document.getElementById('repoLink'),
+    copyReportBtn: document.getElementById('copyReportBtn'),
 
-    // Health Grade Elements
+    // Health Grade & Sub-score Elements
     gradeCard: document.getElementById('gradeCard'),
     healthGrade: document.getElementById('healthGrade'),
     healthScore: document.getElementById('healthScore'),
     healthVerdict: document.getElementById('healthVerdict'),
+    recencyVal: document.getElementById('recencyVal'),
+    recencyBar: document.getElementById('recencyBar'),
+    issueVal: document.getElementById('issueVal'),
+    issueBar: document.getElementById('issueBar'),
+    govVal: document.getElementById('govVal'),
+    govBar: document.getElementById('govBar'),
     diagnosticList: document.getElementById('diagnosticList'),
 
     // Telemetry Metric Elements
@@ -60,14 +77,15 @@ const elements = {
 };
 
 /**
- * Initializes event listeners and loads recent search history on startup.
+ * Initializes event listeners, keyboard shortcuts, localStorage history,
+ * and checks for URL query parameters (?repo=owner/name) on startup.
  */
 function initApp() {
     // Handle form submission
     elements.form.addEventListener('submit', (event) => {
         event.preventDefault();
         handleSmartInputSplit();
-        
+
         const owner = elements.ownerInput.value.trim();
         const repo = elements.repoInput.value.trim();
 
@@ -99,8 +117,42 @@ function initApp() {
     // Clear history button
     elements.clearHistoryBtn.addEventListener('click', clearSearchHistory);
 
+    // Copy diagnostic report to clipboard button
+    if (elements.copyReportBtn) {
+        elements.copyReportBtn.addEventListener('click', copyDiagnosticReport);
+    }
+
+    // Global "/" keyboard shortcut to focus owner input (HCI efficiency)
+    document.addEventListener('keydown', (event) => {
+        const activeTag = document.activeElement ? document.activeElement.tagName : '';
+        if (event.key === '/' && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA') {
+            event.preventDefault();
+            elements.ownerInput.focus();
+            elements.ownerInput.select();
+        }
+    });
+
     // Render saved history from localStorage
     renderSearchHistory();
+
+    // Check URL query parameter for deep-linking (e.g., app.html?repo=facebook/react)
+    checkUrlQueryParam();
+}
+
+/**
+ * Checks if the URL contains ?repo=owner/name and triggers an automatic scan.
+ */
+function checkUrlQueryParam() {
+    const params = new URLSearchParams(window.location.search);
+    const repoParam = params.get('repo');
+    if (!repoParam || !repoParam.includes('/')) return;
+
+    const parts = repoParam.split('/').filter(Boolean);
+    if (parts.length >= 2) {
+        elements.ownerInput.value = parts[0];
+        elements.repoInput.value = parts[1];
+        analyzeRepository(parts[0], parts[1]);
+    }
 }
 
 /**
@@ -111,7 +163,6 @@ function handleSmartInputSplit() {
     const rawValue = elements.ownerInput.value.trim();
     if (!rawValue.includes('/')) return;
 
-    // Strip protocol and domain if full URL was pasted
     const cleaned = rawValue
         .replace(/^https?:\/\/(www\.)?github\.com\//i, '')
         .replace(/\.git$/i, '');
@@ -120,6 +171,87 @@ function handleSmartInputSplit() {
     if (parts.length >= 2) {
         elements.ownerInput.value = parts[0];
         elements.repoInput.value = parts[1];
+    }
+}
+
+/**
+ * Wrapper around fetch() that enforces an AbortController timeout.
+ *
+ * @param {string} url - Endpoint URL.
+ * @param {Object} options - Fetch configuration options.
+ * @param {number} timeoutMs - Timeout duration in milliseconds.
+ * @returns {Promise<Response>}
+ */
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timerId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        return response;
+    } finally {
+        clearTimeout(timerId);
+    }
+}
+
+/**
+ * Retrieves cached API payload from sessionStorage if still within TTL.
+ */
+function getCachedPayload(cacheKey) {
+    try {
+        const raw = sessionStorage.getItem(CACHE_PREFIX + cacheKey);
+        if (!raw) return null;
+
+        const parsed = JSON.parse(raw);
+        if (Date.now() - parsed.timestamp > CACHE_TTL_MS) {
+            sessionStorage.removeItem(CACHE_PREFIX + cacheKey);
+            return null;
+        }
+        return parsed;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Stores fetched API payload in sessionStorage to conserve rate-limit quota.
+ */
+function setCachedPayload(cacheKey, repoData, commitsData) {
+    try {
+        sessionStorage.setItem(
+            CACHE_PREFIX + cacheKey,
+            JSON.stringify({
+                timestamp: Date.now(),
+                repoData,
+                commitsData
+            })
+        );
+    } catch (e) {
+        // Ignore storage quota errors
+    }
+}
+
+/**
+ * Updates the live GitHub API Rate-Limit badge in the header.
+ */
+function updateRateLimitBadge(headers, fromCache = false) {
+    if (!elements.apiQuotaBadge) return;
+
+    if (fromCache) {
+        if (!elements.apiQuotaBadge.textContent.includes('(Cached)')) {
+            elements.apiQuotaBadge.textContent += ' (Cached)';
+        }
+        return;
+    }
+
+    const remaining = headers.get('x-ratelimit-remaining');
+    const limit = headers.get('x-ratelimit-limit');
+
+    if (remaining !== null && limit !== null) {
+        elements.apiQuotaBadge.textContent = `API Quota: ${remaining} / ${limit}`;
     }
 }
 
@@ -133,19 +265,40 @@ function handleSmartInputSplit() {
 async function analyzeRepository(owner, repo) {
     setUIState('loading');
 
+    const normalizedKey = `${owner}/${repo}`.toLowerCase();
+
+    // Update URL query parameter without reloading page for easy sharing
+    try {
+        const newUrl = `${window.location.pathname}?repo=${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+        window.history.replaceState({ path: newUrl }, '', newUrl);
+    } catch (e) {
+        // Ignore history update restrictions on file:// protocol
+    }
+
+    // 1. Check 5-minute sessionStorage cache first
+    const cached = getCachedPayload(normalizedKey);
+    if (cached) {
+        updateRateLimitBadge(null, true);
+        processAndRenderData(cached.repoData, cached.commitsData);
+        return;
+    }
+
     const repoEndpoint = `${GITHUB_API_BASE}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
     const commitsEndpoint = `${repoEndpoint}/commits?per_page=5`;
 
     try {
-        // Fetch repository details and latest 5 commits concurrently
+        // 2. Fetch repository details and latest 5 commits concurrently with timeout
         const [repoResponse, commitsResponse] = await Promise.all([
-            fetch(repoEndpoint, {
+            fetchWithTimeout(repoEndpoint, {
                 headers: { 'Accept': 'application/vnd.github.v3+json' }
             }),
-            fetch(commitsEndpoint, {
+            fetchWithTimeout(commitsEndpoint, {
                 headers: { 'Accept': 'application/vnd.github.v3+json' }
             }).catch(() => null) // Prevent commit fetch failure from breaking main report
         ]);
+
+        // Update rate-limit telemetry badge from HTTP headers
+        updateRateLimitBadge(repoResponse.headers, false);
 
         // Handle non-200 HTTP responses gracefully
         if (!repoResponse.ok) {
@@ -165,26 +318,52 @@ async function analyzeRepository(owner, repo) {
             commitsData = await commitsResponse.json();
         }
 
-        // Calculate custom Health Grade and diagnostic notes
-        const diagnostics = calculateHealthMetrics(repoData);
+        // Save valid response to 5-minute sessionStorage cache
+        setCachedPayload(normalizedKey, repoData, commitsData);
 
-        // Dynamically update the DOM with parsed data
-        renderRepositoryOverview(repoData);
-        renderHealthReport(diagnostics);
-        renderTelemetryMetrics(repoData);
-        renderRecentCommits(commitsData);
-
-        // Save valid lookup to localStorage history
-        saveToSearchHistory(repoData.owner.login, repoData.name, diagnostics.grade);
-
-        setUIState('results');
+        // Render dashboard
+        processAndRenderData(repoData, commitsData);
     } catch (error) {
-        const detailText = error.message === 'Failed to fetch'
-            ? 'Network error detected. Please check your internet connection.'
-            : error.message;
+        let detailText = error.message;
+        if (error.name === 'AbortError') {
+            detailText = 'Request timed out after 8 seconds. Please check your internet connection and try again.';
+        } else if (error.message === 'Failed to fetch') {
+            detailText = 'Network error detected. Please check your internet connection.';
+        }
 
         displayError('Could not fetch data. Please try again.', detailText);
     }
+}
+
+/**
+ * Computes health metrics, updates all DOM sections, and saves to scan history.
+ */
+function processAndRenderData(repoData, commitsData) {
+    const diagnostics = calculateHealthMetrics(repoData);
+
+    // Save current summary for clipboard export
+    currentReportSummary = {
+        fullName: repoData.full_name,
+        url: repoData.html_url,
+        grade: diagnostics.grade,
+        score: diagnostics.score,
+        verdict: diagnostics.verdict,
+        subscores: diagnostics.subscores,
+        stars: repoData.stargazers_count || 0,
+        issues: repoData.open_issues_count || 0,
+        forks: repoData.forks_count || 0,
+        language: repoData.language || 'Not Specified',
+        lastPush: formatRelativeDate(repoData.pushed_at),
+        notes: diagnostics.notes
+    };
+
+    renderRepositoryOverview(repoData);
+    renderHealthReport(diagnostics);
+    renderTelemetryMetrics(repoData);
+    renderRecentCommits(commitsData);
+
+    saveToSearchHistory(repoData.owner.login, repoData.name, diagnostics.grade);
+    setUIState('results');
 }
 
 /**
@@ -194,11 +373,13 @@ async function analyzeRepository(owner, repo) {
  * 3. Governance & Community Traction (Max 25 pts)
  *
  * @param {Object} repo - Parsed JSON object from GitHub API.
- * @returns {Object} Calculated grade, numerical score, verdict, and breakdown notes.
+ * @returns {Object} Calculated grade, numerical score, subscores, verdict, and breakdown notes.
  */
 function calculateHealthMetrics(repo) {
     const notes = [];
-    let score = 0;
+    let recencyScore = 0;
+    let issueScore = 0;
+    let governanceScore = 0;
 
     const now = new Date();
     const lastPushedDate = new Date(repo.pushed_at);
@@ -211,6 +392,7 @@ function calculateHealthMetrics(repo) {
             grade: 'F',
             statusClass: 'grade-f',
             verdict: 'Archived / Read-Only',
+            subscores: { recency: 0, issues: 5, governance: 10 },
             notes: [
                 { type: 'critical', text: 'This repository is archived by the owner and no longer receives updates or security patches.' },
                 { type: 'info', text: `Last push occurred ${daysSinceLastPush} days ago.` }
@@ -220,22 +402,22 @@ function calculateHealthMetrics(repo) {
 
     // 1. Maintenance Recency Evaluation (0 - 45 points)
     if (daysSinceLastPush <= 7) {
-        score += 45;
+        recencyScore = 45;
         notes.push({ type: 'good', text: `Actively maintained: code pushed within the last week (${daysSinceLastPush} days ago).` });
     } else if (daysSinceLastPush <= 30) {
-        score += 40;
+        recencyScore = 40;
         notes.push({ type: 'good', text: `Healthy activity: updated within the last month (${daysSinceLastPush} days ago).` });
     } else if (daysSinceLastPush <= 90) {
-        score += 30;
+        recencyScore = 30;
         notes.push({ type: 'good', text: `Moderate activity: last code push was ${daysSinceLastPush} days ago.` });
     } else if (daysSinceLastPush <= 180) {
-        score += 20;
+        recencyScore = 20;
         notes.push({ type: 'warning', text: `Slowing momentum: no updates in ${daysSinceLastPush} days (3–6 months).` });
     } else if (daysSinceLastPush <= 365) {
-        score += 10;
+        recencyScore = 10;
         notes.push({ type: 'warning', text: `Stale codebase: no updates in ${daysSinceLastPush} days (over 6 months).` });
     } else {
-        score += 0;
+        recencyScore = 0;
         notes.push({ type: 'critical', text: `Dormant repository: last push was ${daysSinceLastPush} days ago (over 1 year).` });
     }
 
@@ -244,25 +426,25 @@ function calculateHealthMetrics(repo) {
     const openIssues = repo.open_issues_count || 0;
 
     if (!repo.has_issues) {
-        score += 20;
+        issueScore = 20;
         notes.push({ type: 'info', text: 'Issue tracker is disabled on this repository.' });
     } else if (openIssues === 0) {
-        score += 30;
+        issueScore = 30;
         notes.push({ type: 'good', text: 'Zero open issues currently logged in the tracker.' });
     } else {
         const issueToStarRatio = openIssues / Math.max(stars, 1);
 
         if (issueToStarRatio <= 0.02 || (openIssues <= 10 && stars >= 50)) {
-            score += 30;
+            issueScore = 30;
             notes.push({ type: 'good', text: `Low issue density (${openIssues.toLocaleString()} open issues vs. ${stars.toLocaleString()} stars).` });
         } else if (issueToStarRatio <= 0.08) {
-            score += 24;
+            issueScore = 24;
             notes.push({ type: 'good', text: `Manageable issue backlog (${openIssues.toLocaleString()} open issues).` });
         } else if (issueToStarRatio <= 0.20) {
-            score += 15;
+            issueScore = 15;
             notes.push({ type: 'warning', text: `Elevated open issue backlog relative to stars (${(issueToStarRatio * 100).toFixed(1)}% ratio).` });
         } else {
-            score += 5;
+            issueScore = 5;
             notes.push({ type: 'critical', text: `High density of unresolved issues (${openIssues.toLocaleString()} open issues vs. ${stars.toLocaleString()} stars).` });
         }
     }
@@ -270,7 +452,7 @@ function calculateHealthMetrics(repo) {
     // 3. Governance & Community Traction (0 - 25 points)
     // 3a. License check (10 points)
     if (repo.license && repo.license.spdx_id && repo.license.spdx_id !== 'NOASSERTION') {
-        score += 10;
+        governanceScore += 10;
         notes.push({ type: 'good', text: `Clear legal governance: licensed under ${repo.license.spdx_id}.` });
     } else {
         notes.push({ type: 'warning', text: 'No standard open-source license detected (risky for production adoption).' });
@@ -278,25 +460,27 @@ function calculateHealthMetrics(repo) {
 
     // 3b. Documentation/Description check (5 points)
     if (repo.description && repo.description.trim().length > 10) {
-        score += 5;
+        governanceScore += 5;
     } else {
         notes.push({ type: 'warning', text: 'Repository lacks a clear summary description.' });
     }
 
     // 3c. Community Adoption (10 points)
     if (stars >= 1000 || repo.forks_count >= 200) {
-        score += 10;
+        governanceScore += 10;
         notes.push({ type: 'good', text: `Strong community adoption (${stars.toLocaleString()} stars, ${repo.forks_count.toLocaleString()} forks).` });
     } else if (stars >= 100 || repo.forks_count >= 20) {
-        score += 8;
+        governanceScore += 8;
         notes.push({ type: 'good', text: `Established community traction (${stars.toLocaleString()} stars).` });
     } else if (stars >= 10) {
-        score += 5;
+        governanceScore += 5;
         notes.push({ type: 'info', text: `Small community footprint (${stars.toLocaleString()} stars).` });
     } else {
-        score += 2;
+        governanceScore += 2;
         notes.push({ type: 'info', text: `Early-stage or niche project (${stars} stars).` });
     }
+
+    const score = recencyScore + issueScore + governanceScore;
 
     // Map final score to Letter Grade and Verdict
     let grade = 'F';
@@ -321,11 +505,22 @@ function calculateHealthMetrics(repo) {
         verdict = 'Stale / Maintenance Risk';
     }
 
-    return { score, grade, statusClass, verdict, notes };
+    return {
+        score,
+        grade,
+        statusClass,
+        verdict,
+        subscores: {
+            recency: recencyScore,
+            issues: issueScore,
+            governance: governanceScore
+        },
+        notes
+    };
 }
 
 /**
- * Populates the Repository Identity Card in the DOM.
+ * Populates the Repository Identity Card and Topic Pills in the DOM.
  *
  * @param {Object} repo - GitHub API repository object.
  */
@@ -357,19 +552,49 @@ function renderRepositoryOverview(repo) {
         archivedBadge.textContent = 'Archived';
         elements.repoBadges.appendChild(archivedBadge);
     }
+
+    // Render GitHub repository topic tags (up to 8)
+    if (elements.repoTopics) {
+        elements.repoTopics.innerHTML = '';
+        if (Array.isArray(repo.topics) && repo.topics.length > 0) {
+            repo.topics.slice(0, 8).forEach((topic) => {
+                const tag = document.createElement('span');
+                tag.className = 'topic-pill';
+                tag.textContent = `#${topic}`;
+                elements.repoTopics.appendChild(tag);
+            });
+            elements.repoTopics.hidden = false;
+        } else {
+            elements.repoTopics.hidden = true;
+        }
+    }
 }
 
 /**
- * Populates the Health Grade Card and Diagnostic Breakdown List.
+ * Populates the Health Grade Card, Sub-Score Progress Bars, and Diagnostic List.
  *
  * @param {Object} diagnostics - Result from calculateHealthMetrics().
  */
 function renderHealthReport(diagnostics) {
-    // Reset grade styling classes on card
     elements.gradeCard.className = `grade-card ${diagnostics.statusClass}`;
     elements.healthGrade.textContent = diagnostics.grade;
     elements.healthScore.textContent = `Score: ${diagnostics.score} / 100`;
     elements.healthVerdict.textContent = diagnostics.verdict;
+
+    // Update 3 weighted sub-score meters
+    const { recency, issues, governance } = diagnostics.subscores;
+    if (elements.recencyVal && elements.recencyBar) {
+        elements.recencyVal.textContent = `${recency} / 45`;
+        elements.recencyBar.style.width = `${Math.round((recency / 45) * 100)}%`;
+    }
+    if (elements.issueVal && elements.issueBar) {
+        elements.issueVal.textContent = `${issues} / 30`;
+        elements.issueBar.style.width = `${Math.round((issues / 30) * 100)}%`;
+    }
+    if (elements.govVal && elements.govBar) {
+        elements.govVal.textContent = `${governance} / 25`;
+        elements.govBar.style.width = `${Math.round((governance / 25) * 100)}%`;
+    }
 
     // Populate diagnostic bullet points safely using textContent
     elements.diagnosticList.innerHTML = '';
@@ -422,7 +647,7 @@ function renderRecentCommits(commits) {
         li.className = 'commit-item';
 
         const commitMessage = entry.commit && entry.commit.message
-            ? entry.commit.message.split('\n')[0] // First line of commit message
+            ? entry.commit.message.split('\n')[0]
             : 'Commit message unavailable';
 
         const authorName = (entry.commit && entry.commit.author && entry.commit.author.name) || 'Unknown Author';
@@ -445,6 +670,36 @@ function renderRecentCommits(commits) {
         li.appendChild(metaSpan);
         elements.commitsList.appendChild(li);
     });
+}
+
+/**
+ * Copies a formatted Markdown diagnostic report to the user's clipboard.
+ */
+async function copyDiagnosticReport() {
+    if (!currentReportSummary || !elements.copyReportBtn) return;
+
+    const r = currentReportSummary;
+    const reportLines = [
+        `# RepoRater Diagnostic Report: ${r.fullName}`,
+        `- **Overall Grade:** ${r.grade} (${r.score}/100 - ${r.verdict})`,
+        `- **Sub-Scores:** Recency ${r.subscores.recency}/45 | Issues ${r.subscores.issues}/30 | Governance ${r.subscores.governance}/25`,
+        `- **Telemetry:** ⭐ ${r.stars.toLocaleString()} Stars | 🐛 ${r.issues.toLocaleString()} Open Issues | 🍴 ${r.forks.toLocaleString()} Forks`,
+        `- **Primary Language:** ${r.language} | **Last Code Push:** ${r.lastPush}`,
+        `- **Repository URL:** ${r.url}`,
+        `\n## Diagnostic Findings:`,
+        ...r.notes.map((n) => `- [${n.type.toUpperCase()}] ${n.text}`)
+    ];
+
+    try {
+        await navigator.clipboard.writeText(reportLines.join('\n'));
+        const originalText = elements.copyReportBtn.textContent;
+        elements.copyReportBtn.textContent = 'Copied Report ✓';
+        setTimeout(() => {
+            elements.copyReportBtn.textContent = originalText;
+        }, 2000);
+    } catch (e) {
+        elements.copyReportBtn.textContent = 'Copy Failed';
+    }
 }
 
 /**
@@ -480,7 +735,6 @@ function saveToSearchHistory(owner, repo, grade) {
         const existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
         const fullKey = `${owner}/${repo}`.toLowerCase();
 
-        // Remove duplicate if already in history
         const filtered = existing.filter((item) => item.id !== fullKey);
 
         filtered.unshift({

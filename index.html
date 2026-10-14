@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Developer Portfolio &amp; Project Overview | RepoRater IT110</title>
+    <!-- Inline SVG Favicon to prevent 404 console errors during live inspection -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23161b22' stroke='%2358a6ff' stroke-width='6'/><text x='50%25' y='56%25' font-family='monospace' font-size='52' font-weight='bold' fill='%233fb950' text-anchor='middle' dominant-baseline='middle'>R</text></svg>">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -42,6 +44,14 @@
                 <a href="https://docs.github.com/en/rest" target="_blank" rel="noopener noreferrer" class="secondary-btn">
                     GitHub REST API Docs &nearr;
                 </a>
+            </div>
+
+            <!-- Deep-Link Launchers to demonstrate URL query parameter routing -->
+            <div class="deeplink-bar">
+                <span class="presets-label">Instant Deep-Link Scans:</span>
+                <a href="app.html?repo=facebook/react" class="preset-btn">Scan facebook/react &rarr;</a>
+                <a href="app.html?repo=twbs/bootstrap" class="preset-btn">Scan twbs/bootstrap &rarr;</a>
+                <a href="app.html?repo=moment/moment" class="preset-btn">Scan moment/moment (Archived) &rarr;</a>
             </div>
         </section>
 
@@ -127,7 +137,7 @@
                         <div class="role-box">
                             <span class="role-tag">Role 03</span>
                             <strong>JavaScript Logic &amp; API Integration</strong>
-                            <p>Implemented concurrent <code>async/await</code> fetch pipelines, custom 100-point grading heuristics, error recovery, and <code>localStorage</code> state in <code>script.js</code>.</p>
+                            <p>Implemented concurrent <code>async/await</code> fetch pipelines, custom 100-point grading heuristics, <code>sessionStorage</code> caching, and error recovery in <code>script.js</code>.</p>
                         </div>
                         <div class="role-box">
                             <span class="role-tag">Role 04</span>
